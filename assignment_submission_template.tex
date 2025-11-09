@@ -1,0 +1,47 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage{amsmath,hyperref,url}
+\usepackage[margin=25mm]{geometry}
+\renewcommand*\ttdefault{txtt} % 20% tighter than courier
+\setlength{\parskip}{2mm}
+\setlength{\parindent}{0mm}
+
+\usepackage{multirow}
+\usepackage{graphicx}
+\newcommand{\condon}{\,|\,}
+
+\usepackage{tikz}
+\usetikzlibrary{calc}
+
+\AddToHook{shipout/background}{%
+\begin{tikzpicture}[remember picture,overlay] \draw[line width=0.6pt] ($(current page.north west)!0.5!(current page.south west)$) -- ($(current page.north east)!0.5!(current page.south east)$); \end{tikzpicture}% 
+}
+
+\begin{document}
+\begin{center}
+{\Large\bf ANLP Assignment 2025}\\ \large Marked anonymously: do not add your name(s) or ID numbers.\\[2mm]
+\end{center}
+
+Use this template file for your solutions. Please answer each question within the page limits specified. For your convenience, we added half-page delimiters, please do not remove them. Different questions may be marked by different markers so your answers must be self-contained.
+
+\newpage
+\section{Training your model}
+Replace this with your answer to this question. You will lose marks if your answer exceeds half a page.
+
+\newpage
+\section{Error analysis}
+Replace this with your answer to this question. You will lose marks if your answer exceeds one and a half pages.
+
+\newpage
+\section{Evaluation metrics}
+Replace this with your answer to this question. You will lose marks if your answer exceeds one page.
+
+\newpage
+\section{Attention coverage}
+Replace this with your answer to this question. You will lose marks if your answer exceeds one and a half pages.
+
+\newpage
+\section{Improving your model}
+Replace this with your answer to this question. You will lose marks if your answer exceeds one page.
+
+
+\end{document}
