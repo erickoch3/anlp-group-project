@@ -1,0 +1,15 @@
+[project]
+name = "anlp"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "bertviz>=1.4.1",
+    "datasets>=4.4.1",
+    "evaluate>=0.4.6",
+    "jupyter>=1.1.1",
+    "jupyterlab-vim>=4.1.4",
+    "matplotlib>=3.10.7",
+    "sacrebleu>=2.5.1",
+    "sacremoses>=0.1.1",
+    "transformers>=4.57.1",
+]
