@@ -11,5 +11,8 @@ dependencies = [
     "matplotlib>=3.10.7",
     "sacrebleu>=2.5.1",
     "sacremoses>=0.1.1",
-    "transformers>=4.57.1",
+    "transformers",
 ]
+
+[tool.uv.sources]
+transformers = { git = "https://github.com/huggingface/transformers", branch = "main" }

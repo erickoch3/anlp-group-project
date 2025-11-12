@@ -1,18 +1,35 @@
 from transformers.models.marian.modeling_marian import (
     MarianAttention, 
-    MarianConfig,
     MarianDecoder,
     MarianDecoderLayer,
     MarianEncoder,
     MarianEncoderLayer,
+    MarianPreTrainedModel,
+    eager_attention_forward,
 )
-
+from transformers.models.marian.configuration_marian import MarianConfig
+from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+from transformers.processing_utils import Unpack
+from transformers.activations import ACT2FN
+from transformers.cache_utils import Cache, DynamicCache, EncoderDecoderCache
+from transformers.masking_utils import create_bidirectional_mask, create_causal_mask
+from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
+from transformers.modeling_outputs import (
+    BaseModelOutput,
+    BaseModelOutputWithPastAndCrossAttentions,
+    CausalLMOutputWithCrossAttentions,
+    Seq2SeqLMOutput,
+    Seq2SeqModelOutput,
+)
 from transformers.cache_utils import Cache, DynamicCache, EncoderDecoderCache
 import torch
 import torch.nn as nn
-import math
 
 from typing import Optional
+import copy
+import math
+from collections.abc import Callable
+from typing import Optional, Union
 
 
 class MarianRotaryEmbedding(nn.Module):
@@ -96,15 +113,44 @@ class MarianRotaryEmbedding(nn.Module):
 
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
+def rotate_half(x):
+    """Rotates half the hidden dims of the input."""
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
+    return torch.cat((-x2, x1), dim=-1)
+
+
+def apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1):
+    """Applies Rotary Position Embedding to the query and key tensors.
+
+    Args:
+        q (`torch.Tensor`): The query tensor.
+        k (`torch.Tensor`): The key tensor.
+        cos (`torch.Tensor`): The cosine part of the rotary embedding.
+        sin (`torch.Tensor`): The sine part of the rotary embedding.
+        unsqueeze_dim (`int`, *optional*, defaults to 1):
+            The 'unsqueeze_dim' argument specifies the dimension along which to unsqueeze cos[position_ids] and
+            sin[position_ids] so that they can be properly broadcasted to the dimensions of q and k. For example, note
+            that cos[position_ids] and sin[position_ids] have the shape [batch_size, seq_len, head_dim]. Then, if q and
+            k have the shape [batch_size, heads, seq_len, head_dim], then setting unsqueeze_dim=1 makes
+            cos[position_ids] and sin[position_ids] broadcastable to the shapes of q and k. Similarly, if q and k have
+            the shape [batch_size, seq_len, heads, head_dim], then set unsqueeze_dim=2.
+    Returns:
+        `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
+    """
+    cos = cos.unsqueeze(unsqueeze_dim)
+    sin = sin.unsqueeze(unsqueeze_dim)
+    q_embed = (q * cos) + (rotate_half(q) * sin)
+    k_embed = (k * cos) + (rotate_half(k) * sin)
+    return q_embed, k_embed
 
 class RotaryMarianAttention(MarianAttention):
 
     def forward(
         self,
         hidden_states: torch.Tensor,
-        query_position_embeddings: torch.Tensor,
+        position_embeddings: Optional[torch.Tensor],
         key_value_states: Optional[torch.Tensor] = None,
-        key_value_position_embeddings: Optional[torch.Tensor] = None,
         past_key_values: Optional[Cache] = None,
         attention_mask: Optional[torch.Tensor] = None,
         output_attentions: bool = False,
@@ -162,10 +208,21 @@ class RotaryMarianAttention(MarianAttention):
                 if is_cross_attention and isinstance(past_key_values, EncoderDecoderCache):
                     past_key_values.is_updated[self.layer_idx] = True
 
+        # Only apply RoPE in self attention
+        if not is_cross_attention:
+            assert position_embeddings, "no position embeddings provided to self attention layer."
+            cos, sin = position_embeddings
+            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+
+        if past_key_values is not None:
+            # sin and cos are specific to RoPE models; cache_position needed for the static cache
+            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+            key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx, cache_kwargs)
+
         attention_interface: Callable = eager_attention_forward
         if self.config._attn_implementation != "eager":
             attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
-
+        
         attn_output, attn_weights = attention_interface(
             self,
             query_states,
@@ -291,7 +348,6 @@ class RotaryMarianDecoderLayer(MarianDecoderLayer):
         position_embeddings: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         encoder_hidden_states: Optional[torch.Tensor] = None,
-        encoder_position_embeddings: Optional[torch.Tensor] = None,
         encoder_attention_mask: Optional[torch.Tensor] = None,
         past_key_values: Optional[Cache] = None,
         output_attentions: Optional[bool] = False,
@@ -321,9 +377,7 @@ class RotaryMarianDecoderLayer(MarianDecoderLayer):
 
             hidden_states, cross_attn_weights = self.encoder_attn(
                 hidden_states=hidden_states,
-                query_position_embeddings=position_embeddings,
                 key_value_states=encoder_hidden_states,
-                key_value_position_embeddings=encoder_position_embeddings,
                 attention_mask=encoder_attention_mask,
                 past_key_values=past_key_values,
                 output_attentions=output_attentions,
@@ -444,7 +498,12 @@ class RotaryMarianEncoder(MarianPreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
 
-        position_embeddings = self.rotary_emb(inputs_embeds, postion_ids)
+        # We are in the encoder, so no KV cache, we can simply build new pos ids
+        batch_size, seq_length = inputs_embeds.size()[:-1]
+        device = inputs_embeds.device
+
+        position_ids = torch.arange(seq_length, device=device).unsqueeze(0).expand(batch_size, -1)
+        position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
 
         hidden_states = nn.functional.dropout(input_embeds, p=self.dropout, training=self.training)
 
@@ -492,7 +551,7 @@ class RotaryMarianEncoder(MarianPreTrainedModel):
         )
 
 
-class MarianDecoder(MarianPreTrainedModel):
+class RotaryMarianDecoder(MarianPreTrainedModel):
     """
     Transformer decoder consisting of *config.decoder_layers* layers. Each layer is a [`MarianDecoderLayer`]
 
@@ -634,6 +693,9 @@ class MarianDecoder(MarianPreTrainedModel):
                 past_key_values_length, past_key_values_length + seq_length, device=inputs_embeds.device
             )
 
+        # For RoPE
+        position_ids = cache_position.unsqueeze(0).expand(batch_size, -1)
+
         if attention_mask is None and not is_torchdynamo_compiling():
             # required mask seq length can be calculated via length of past cache
             mask_seq_length = past_key_values_length + seq_length
@@ -661,7 +723,6 @@ class MarianDecoder(MarianPreTrainedModel):
 
         # embed positions
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
-        encoder_position_embeddings = self.rotary_emb(encoder_hidden_states, encoder_position_ids)
         hidden_states = nn.functional.dropout(input_embeds, p=self.dropout, training=self.training)
 
         # decoder layers
@@ -683,7 +744,6 @@ class MarianDecoder(MarianPreTrainedModel):
                 causal_mask,
                 encoder_hidden_states,  # as a positional argument for gradient checkpointing
                 position_embeddings=position_embeddings,
-                encoder_position_embeddings=encoder_position_embeddings,
                 encoder_attention_mask=encoder_attention_mask,
                 past_key_values=past_key_values,
                 output_attentions=output_attentions,
