@@ -3,6 +3,7 @@ name = "anlp"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
+    "accelerate>=1.11.0",
     "bertviz>=1.4.1",
     "datasets>=4.4.1",
     "evaluate>=0.4.6",
@@ -12,6 +13,7 @@ dependencies = [
     "sacrebleu>=2.5.1",
     "sacremoses>=0.1.1",
     "transformers",
+    "wandb>=0.23.0",
 ]
 
 [tool.uv.sources]
