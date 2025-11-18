@@ -2,6 +2,7 @@ import torch
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, GenerationConfig
 from rope_marian import RotaryMarianMTModel
+from semi_rope_marian import SemiRotaryMarianMTModel
 from eval_metrics import bleu_func, chrf_func, lenr_func, repr_func
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -40,6 +41,8 @@ def main():
     models = {
         "my-de-en-nmt": "my-de-en-nmt",
         "my-de-en-nmt_rot": "my-de-en-nmt_rot",
+        # semi-rope variant: RoPE encoder + sinusoidal decoder
+        "my-de-en-nmt_semi_rot": "my-de-en-nmt_semi_rot",
     }
 
     metrics = {
@@ -53,8 +56,10 @@ def main():
 
     for name, path in models.items():
         tok = AutoTokenizer.from_pretrained(path)
-        if name=="my-de-en-nmt_rot":
+        if name == "my-de-en-nmt_rot":
             mdl = RotaryMarianMTModel.from_pretrained(path).to(device)
+        elif name == "my-de-en-nmt_semi_rot":
+            mdl = SemiRotaryMarianMTModel.from_pretrained(path).to(device)
         else:
             mdl = AutoModelForSeq2SeqLM.from_pretrained(path).to(device)
         mdl.eval()
@@ -74,8 +79,10 @@ def main():
     order = [
         ("my-de-en-nmt", "id"),
         ("my-de-en-nmt_rot", "id"),
+        ("my-de-en-nmt_semi_rot", "id"),
         ("my-de-en-nmt", "ood"),
         ("my-de-en-nmt_rot", "ood"),
+        ("my-de-en-nmt_semi_rot", "ood"),
     ]
     metric_names = ["bleu", "chrf", "lenr", "repr"]
 
@@ -86,12 +93,11 @@ def main():
     width = 0.18
     group_gap = width * 0.8
 
-    offsets = [
-        -1.5 * width - group_gap / 2,
-        -0.5 * width - group_gap / 2,
-        0.5 * width + group_gap / 2,
-        1.5 * width + group_gap / 2,
-    ]
+    # Compute offsets dynamically for all series, spaced around 0
+    n_series = len(order)
+    step = width * 1.2
+    center = (n_series - 1) / 2
+    offsets = [ (j - center) * step for j in range(n_series) ]
 
     left_metrics = {"bleu", "chrf"}
     right_metrics = {"lenr", "repr"}
